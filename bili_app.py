@@ -73,7 +73,8 @@ class BiliApp:
         self.user_info = None
         self.download_status_var = tk.StringVar()
         self.download_status_var.set("就绪")
-        self.cancel_download = False  # 取消下载标志
+        self.cancel_download = False
+        self.search_scope_var = tk.StringVar(value="B站搜索")
         self.apply_theme()
 
         if not os.path.exists(DOWNLOAD_DIR):
@@ -82,11 +83,9 @@ class BiliApp:
         # 检测 ffmpeg
         self.ffmpeg_path = None
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        # 如果程序目录下有 ffmpeg.exe 和 ffprobe.exe，使用目录路径
         if os.path.exists(os.path.join(base_dir, 'ffmpeg.exe')) and os.path.exists(os.path.join(base_dir, 'ffprobe.exe')):
             self.ffmpeg_path = base_dir
         else:
-            # 否则从系统 PATH 查找 ffmpeg
             ffmpeg_exe = shutil.which('ffmpeg')
             if ffmpeg_exe:
                 self.ffmpeg_path = os.path.dirname(ffmpeg_exe)
@@ -289,13 +288,17 @@ class BiliApp:
         self.user_name_label = ttk.Label(user_frame, text="加载中...", style='Header.TLabel')
         self.user_name_label.pack(side=tk.LEFT, padx=5)
 
-        # 搜索栏（关键词/BV号 + 搜索按钮 + 下载MP4/MP3按钮）
+        # 搜索栏（关键词/BV号/链接 + 搜索范围选择 + 搜索按钮 + 下载MP4/MP3按钮）
         search_frame = ttk.Frame(self.main_frame, padding=5)
         search_frame.grid(row=1, column=0, sticky='ew')
-        ttk.Label(search_frame, text="搜索/BV号:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(search_frame, text="搜索:").pack(side=tk.LEFT, padx=5)
         self.search_entry = ttk.Entry(search_frame, width=35)
         self.search_entry.pack(side=tk.LEFT, padx=5)
-        self.search_btn = ttk.Button(search_frame, text="搜索", command=self.search_video)
+        # 搜索范围下拉框
+        search_scope_combo = ttk.Combobox(search_frame, textvariable=self.search_scope_var,
+                                          values=["B站搜索", "收藏夹搜索"], width=10, state="readonly")
+        search_scope_combo.pack(side=tk.LEFT, padx=2)
+        self.search_btn = ttk.Button(search_frame, text="搜索/解析", command=self.search_video)
         self.search_btn.pack(side=tk.LEFT, padx=5)
         self.download_mp4_btn_s = ttk.Button(search_frame, text="下载MP4", command=lambda: self.download_input(False))
         self.download_mp4_btn_s.pack(side=tk.LEFT, padx=2)
@@ -376,6 +379,7 @@ class BiliApp:
         self.load_user_info()
         self.start_refresh_data()
 
+    # ---------- 用户信息加载（略，同原代码） ----------
     def load_user_info(self):
         def fetch():
             try:
@@ -425,6 +429,7 @@ class BiliApp:
                 self.main_frame.destroy()
             self.show_login_frame()
 
+    # ---------- 收藏夹数据获取（同原代码） ----------
     def start_refresh_data(self):
         self.refresh_btn.config(state=tk.DISABLED)
         self.loading_overlay.lift()
@@ -530,30 +535,76 @@ class BiliApp:
             json.dump(self.all_data, f, ensure_ascii=False, indent=2)
         messagebox.showinfo("成功", f"数据已保存到 {output_file}")
 
-    # ---------- 搜索与下载功能 ----------
+    # ---------- 搜索与下载功能（修改部分） ----------
+    def extract_bvid(self, text):
+        """从文本中提取 BV 号，支持完整链接、短链接、纯 BV 号"""
+        # 匹配 BV 号
+        match = re.search(r'BV[0-9A-Za-z]+', text)
+        if match:
+            return match.group(0)
+        # 匹配 av 号（旧版）
+        match = re.search(r'av(\d+)', text)
+        if match:
+            return f"av{match.group(1)}"
+        return None
+
     def download_input(self, audio_only):
-        """下载搜索框中输入的 BV 号"""
-        bvid = self.search_entry.get().strip()
-        if not bvid:
-            messagebox.showinfo("提示", "请输入BV号")
+        """下载搜索框中输入的内容（仅支持 BV 号、av 号或链接）"""
+        text = self.search_entry.get().strip()
+        if not text:
+            messagebox.showinfo("提示", "请输入BV号、av号或视频链接")
             return
-        if not re.match(r'^BV[0-9A-Za-z]+$', bvid):
-            messagebox.showwarning("警告", "输入内容不是有效的BV号")
+        bvid = self.extract_bvid(text)
+        if not bvid:
+            messagebox.showwarning("警告", "无法从输入内容中识别视频ID")
             return
         self.start_download(bvid, audio_only, bvid)
 
     def search_video(self):
+        """搜索/解析入口，根据输入内容和搜索范围执行相应操作"""
         keyword = self.search_entry.get().strip()
         if not keyword:
-            messagebox.showinfo("提示", "请输入关键词或BV号")
+            messagebox.showinfo("提示", "请输入关键词、BV号或链接")
             return
-        # 如果输入的是 BV 号，提示使用旁边的下载按钮
-        if re.match(r'^BV[0-9A-Za-z]+$', keyword):
-            messagebox.showinfo("提示", "检测到BV号，请使用旁边的“下载MP4”或“下载MP3”按钮直接下载。")
+
+        # 尝试提取视频 ID（BV/av）
+        video_id = self.extract_bvid(keyword)
+        if video_id:
+            # 询问格式并直接下载
+            if messagebox.askyesno("下载格式", "选择“是”下载MP4，选择“否”下载MP3"):
+                audio_only = False
+            else:
+                audio_only = True
+            self.start_download(video_id, audio_only, video_id)
             return
-        # 否则进行关键词搜索
+
+        # 根据搜索范围处理
+        scope = self.search_scope_var.get()
+        if scope == "收藏夹搜索":
+            self.search_local(keyword)
+        else:
+            self.search_online(keyword)
+
+    def search_local(self, keyword):
+        """在已加载的收藏夹中搜索视频"""
+        if not self.all_data:
+            messagebox.showinfo("提示", "收藏夹数据尚未加载")
+            return
+        results = []
+        for folder_name, folder_data in self.all_data.items():
+            for video in folder_data['videos']:
+                if keyword.lower() in video['title'].lower() or keyword.lower() in video['up'].lower():
+                    results.append(video)
+        if not results:
+            messagebox.showinfo("结果", "未在收藏夹中找到匹配视频")
+            return
+        # 弹出结果窗口
+        self.show_search_results_window(results, title=f"收藏夹搜索结果: {keyword}")
+
+    def search_online(self, keyword):
+        """在线搜索 B 站视频（原有功能）"""
         search_win = tk.Toplevel(self.root)
-        search_win.title(f"搜索结果: {keyword}")
+        search_win.title(f"B站搜索结果: {keyword}")
         search_win.geometry("800x400")
         search_win.transient(self.root)
         columns = ('title', 'up', 'duration', 'bvid')
@@ -567,6 +618,9 @@ class BiliApp:
         result_tree.column('duration', width=80)
         result_tree.column('bvid', width=120)
         result_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # 绑定右键复制菜单
+        self.bind_copy_menu(result_tree)
+
         btn_frame = ttk.Frame(search_win)
         btn_frame.pack(pady=5)
         mp4_btn = ttk.Button(btn_frame, text="下载MP4", command=lambda: self.download_from_search(result_tree, search_win, False))
@@ -590,6 +644,70 @@ class BiliApp:
 
         threading.Thread(target=fetch_results, daemon=True).start()
 
+    def show_search_results_window(self, videos, title="搜索结果"):
+        """显示本地搜索结果窗口"""
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.geometry("800x400")
+        win.transient(self.root)
+        columns = ('title', 'up', 'duration', 'bvid')
+        tree = ttk.Treeview(win, columns=columns, show='headings', height=15, selectmode='browse')
+        tree.heading('title', text='标题')
+        tree.heading('up', text='UP主')
+        tree.heading('duration', text='时长')
+        tree.heading('bvid', text='BV号')
+        tree.column('title', width=400)
+        tree.column('up', width=150)
+        tree.column('duration', width=80)
+        tree.column('bvid', width=120)
+        tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.bind_copy_menu(tree)
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(pady=5)
+        mp4_btn = ttk.Button(btn_frame, text="下载MP4", command=lambda: self.download_from_search(tree, win, False))
+        mp4_btn.pack(side=tk.LEFT, padx=5)
+        mp3_btn = ttk.Button(btn_frame, text="下载MP3", command=lambda: self.download_from_search(tree, win, True))
+        mp3_btn.pack(side=tk.LEFT, padx=5)
+
+        for video in videos:
+            duration = video.get('duration', '--')
+            if isinstance(duration, int):
+                mins, secs = divmod(duration, 60)
+                duration = f"{mins:02d}:{secs:02d}"
+            tree.insert('', tk.END, values=(video['title'], video['up'], duration, video['bvid']))
+
+    def bind_copy_menu(self, tree):
+        """为 Treeview 绑定右键复制菜单"""
+        menu = tk.Menu(tree, tearoff=0)
+        menu.add_command(label="复制选中行", command=lambda: self.copy_selected_row(tree))
+        menu.add_command(label="复制单元格", command=lambda: self.copy_selected_cell(tree))
+        tree.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
+
+    def copy_selected_row(self, tree):
+        selection = tree.selection()
+        if not selection:
+            return
+        item = tree.item(selection[0])
+        values = item['values']
+        text = "\t".join(str(v) for v in values)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def copy_selected_cell(self, tree):
+        selection = tree.selection()
+        if not selection:
+            return
+        # 获取点击的列
+        col = tree.identify_column(tree.winfo_pointerx() - tree.winfo_rootx())
+        if not col:
+            return
+        col_index = int(col.replace('#', '')) - 1
+        item = tree.item(selection[0])
+        value = item['values'][col_index]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(value))
+
     def display_search_results(self, tree, results):
         for item in tree.get_children():
             tree.delete(item)
@@ -611,6 +729,7 @@ class BiliApp:
         parent_win.destroy()
         self.start_download(bvid, audio_only, title)
 
+    # ---------- 批量下载（同原代码，略） ----------
     def download_selected(self, audio_only):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -626,7 +745,7 @@ class BiliApp:
             messagebox.showwarning("警告", "未找到有效的 BV 号")
             return
 
-        self.cancel_download = False  # 重置取消标志
+        self.cancel_download = False
 
         def batch_download():
             failed = []
@@ -653,7 +772,6 @@ class BiliApp:
         self.download_status_var.set("正在取消...")
 
     def start_download(self, bvid, audio_only, title):
-        """单个下载（用于搜索框和搜索结果）"""
         def download_thread():
             try:
                 self.download_video(bvid, audio_only)
@@ -666,7 +784,6 @@ class BiliApp:
     def download_video(self, bvid, audio_only=False):
         url = f"https://www.bilibili.com/video/{bvid}"
 
-        # 准备 Netscape 格式 Cookie 文件
         cookies = self.session.cookies.get_dict()
         tmp_cookie_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
         tmp_cookie_file.write("# Netscape HTTP Cookie File\n")
@@ -686,7 +803,6 @@ class BiliApp:
             'max_sleep_interval': 10,
         }
 
-        # 设置 ffmpeg 路径（目录）
         if self.ffmpeg_path:
             ydl_opts['ffmpeg_location'] = self.ffmpeg_path
 
