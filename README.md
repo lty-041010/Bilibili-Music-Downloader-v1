@@ -17,5 +17,5 @@
 ```bash
 pyinstaller -F -w --hidden-import=keyring main.py
 
-改自己的路径
+## 改自己的路径
 pyinstaller --noconfirm --clean --onedir --windowed --name "BiliDownloader" --add-data "C:\xxxxx\ffmpeg.exe;." --add-data "C:\xxxxx\ffprobe.exe;." --collect-all opencc --hidden-import opencc --hidden-import mutagen --hidden-import qrcode main.py
