@@ -21,7 +21,7 @@ class SearchWindow:
         self.win.title(f"B站搜索结果: {keyword}")
         self.win.geometry("800x400")
         self.win.transient(controller.root)
-        self.win.grab_set()  # 模态（可选）
+        self.win.grab_set()  # 设置模态
 
         # 结果树
         columns = ('title', 'up', 'duration', 'bvid')
@@ -113,7 +113,11 @@ class SearchWindow:
             return
         bvid = values[3]  # BV号
         title = values[0]  # 标题
-        # 关闭当前窗口
+        # 关闭窗口前释放grab
+        try:
+            self.win.grab_release()
+        except tk.TclError:
+            pass
         self.win.destroy()
         # 调用主控制器的下载方法
         self.controller.start_download(bvid, audio_only, title)

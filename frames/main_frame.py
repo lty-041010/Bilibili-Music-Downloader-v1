@@ -10,7 +10,6 @@ import queue
 from PIL import Image, ImageTk
 import requests
 
-
 import log_manager
 from log_manager import TaskStatus
 # HEADERS 直接在文件内定义，避免导入 config 冲突
@@ -472,17 +471,25 @@ class MainFrame(ttk.Frame):
         mp3_btn.pack(side=tk.LEFT, padx=5)
 
         def fetch_results():
-            try:
-                url = 'https://api.bilibili.com/x/web-interface/search/type'
-                params = {'search_type': 'video', 'keyword': keyword, 'page': 1, 'page_size': 20}
-                resp = self.controller.session.get(url, params=params)
-                data = resp.json()
-                if data['code'] != 0:
-                    raise Exception(data['message'])
-                results = data['data']['result']
-                self.controller.root.after(0, lambda: self.display_search_results(result_tree, results))
-            except Exception as e:
-                self.controller.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    url = 'https://api.bilibili.com/x/web-interface/search/type'
+                    params = {'search_type': 'video', 'keyword': keyword, 'page': 1, 'page_size': 20}
+                    # 设置 timeout=10 秒
+                    resp = self.controller.session.get(url, params=params, timeout=10)
+                    data = resp.json()
+                    if data['code'] != 0:
+                        raise Exception(data['message'])
+                    results = data['data']['result']
+                    self.controller.root.after(0, lambda: self.display_search_results(result_tree, results))
+                    return  # 成功则退出
+                except Exception as e:
+                    if attempt == max_retries - 1:  # 最后一次失败
+                        self.controller.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
+                    else:
+                        # 短暂等待后重试
+                        time.sleep(0.5 * (attempt + 1))
 
         threading.Thread(target=fetch_results, daemon=True).start()
 
@@ -597,11 +604,14 @@ class MainFrame(ttk.Frame):
             total = len(bvids)
             completed = 0
             failed = []
+            cancelled = False  # 新增：标记用户是否主动取消
 
             self.controller.root.after(0, lambda: self.bottom_progress.config(maximum=total, value=0))
 
             for bvid, title in zip(bvids, titles):
+                # 循环开始处检查取消标志（原有逻辑保留）
                 if self.cancel_download or self.controller.downloader.cancel_flag:
+                    cancelled = True
                     self.controller.root.after(0, lambda: self.controller.download_status_var.set("下载已取消"))
                     break
 
@@ -613,15 +623,25 @@ class MainFrame(ttk.Frame):
                     self.controller.root.after(0, lambda t=title: self.controller.download_status_var.set(
                         f"下载完成: {t}"))
                 except Exception as e:
+                    # 若因取消而抛出异常，则直接退出，不记录为失败
+                    if self.cancel_download or self.controller.downloader.cancel_flag:
+                        cancelled = True
+                        self.controller.root.after(0, lambda: self.controller.download_status_var.set("下载已取消"))
+                        break
                     failed.append(f"{title}: {str(e)}")
                     self.controller.root.after(0, lambda t=title: self.controller.download_status_var.set(
                         f"下载失败: {t}"))
                 time.sleep(3)
 
-            if failed:
-                self.controller.root.after(0, lambda: messagebox.showwarning("部分下载失败", "\n".join(failed)))
-            self.controller.root.after(0, lambda: self.controller.download_status_var.set("批量下载完成"))
-            self.controller.root.after(0, lambda: self.bottom_progress.config(value=total))
+            # 根据是否取消显示最终状态
+            if cancelled:
+                self.controller.root.after(0, lambda: self.controller.download_status_var.set("批量下载已取消"))
+                self.controller.root.after(0, lambda: self.bottom_progress.config(value=completed))
+            else:
+                if failed:
+                    self.controller.root.after(0, lambda: messagebox.showwarning("部分下载失败", "\n".join(failed)))
+                self.controller.root.after(0, lambda: self.controller.download_status_var.set("批量下载完成"))
+                self.controller.root.after(0, lambda: self.bottom_progress.config(value=total))
 
         threading.Thread(target=batch_download, daemon=True).start()
 
@@ -652,9 +672,25 @@ class MainFrame(ttk.Frame):
 
         threading.Thread(target=download_thread, daemon=True).start()
 
-    # 主题更新回调
     def on_theme_changed(self):
+        """主题切换时更新所有 tk 控件的颜色，ttk 控件由样式自动处理"""
         theme = self.controller.theme
-        self.folder_listbox.config(bg=theme['listbox_bg'], fg=theme['fg'],
-                                   selectbackground=theme['tree_selected_bg'])
-        pass
+
+        # 更新收藏夹列表（tk.Listbox）
+        self.folder_listbox.config(
+            bg=theme['listbox_bg'],
+            fg=theme['fg'],
+            selectbackground=theme['tree_selected_bg'],
+            selectforeground=theme['fg']
+        )
+
+        # 更新日志框（tk.Text 通过 ScrolledText 包装）
+        self.log_box.config(
+            bg=theme['listbox_bg'],
+            fg=theme['fg'],
+            insertbackground=theme['fg'],  # 光标颜色
+            selectbackground=theme['tree_selected_bg']
+        )
+
+        # 如有其他 tk 控件（如输入框），也可在此处补充更新
+        # 注意：ttk.Entry 不需要手动更新，因为 ttk 样式已处理
