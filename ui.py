@@ -1,17 +1,19 @@
 # ui.py
 import tkinter as tk
 from tkinter import ttk, messagebox
-import keyring
 import os
 import sys
 import json
 import shutil
 import requests
-from config import LIGHT_THEME, DARK_THEME, CONFIG_FILE, HEADERS
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from config import LIGHT_THEME, DARK_THEME, CONFIG_FILE, COOKIES_FILE, HEADERS, DEFAULT_DOWNLOAD_DIR
 from bili_api import BiliAPI
 from downloader import Downloader
 from frames.login_frame import LoginFrame
 from frames.main_frame import MainFrame
+
 
 class BiliApp:
     def __init__(self, root):
@@ -22,6 +24,13 @@ class BiliApp:
         self.theme = LIGHT_THEME.copy()
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+
+        # 配置重试适配器（最多重试3次，退避因子0.5，对连接错误和5xx状态码重试）
+        retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+
         self.api = BiliAPI(self.session)
         self.uid = None
         self.all_data = {}
@@ -35,10 +44,10 @@ class BiliApp:
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
-            self.download_dir = self.config.get("download_dir", r"E:\音乐")
+            self.download_dir = self.config.get("download_dir", DEFAULT_DOWNLOAD_DIR)
         else:
             self.config = {}
-            self.download_dir = r"E:\音乐"
+            self.download_dir = DEFAULT_DOWNLOAD_DIR
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir)
 
@@ -67,14 +76,12 @@ class BiliApp:
             ffmpeg_path=self.ffmpeg_path,
             session=self.session,
             progress_callback=self.update_download_status,
-            root=self.root,  # 传入主线程
+            root=self.root,
             lyrics_lang=self.lyrics_lang
         )
 
-        # 新增：简繁转换开关变量（默认开启转换）
-        self.convert_var = tk.BooleanVar(value=True)
-        self.downloader.convert_to_simplified = self.convert_var.get()
-        self.convert_var.trace_add('write', self._on_convert_changed)
+        # 绑定窗口关闭事件（防止线程泄漏）
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.apply_theme()
         if self.try_auto_login():
@@ -82,9 +89,22 @@ class BiliApp:
         else:
             self.show_login_frame()
 
-    # ---------- 新增：简繁转换变化回调 ----------
-    def _on_convert_changed(self, *args):
-        self.downloader.convert_to_simplified = self.convert_var.get()
+    # ---------- 窗口关闭处理 ----------
+    def on_close(self):
+        """窗口关闭时清理所有待处理的重复文件查询事件，避免线程泄漏"""
+        import log_manager
+        import queue as q
+        while True:
+            try:
+                msg_type, *data = log_manager.ui_queue.get_nowait()
+                if msg_type == "QUERY_DUP":
+                    result_box = data[3]
+                    event = data[4]
+                    result_box[0] = None
+                    event.set()
+            except q.Empty:
+                break
+        self.root.destroy()
 
     # ---------- 主题管理 ----------
     def apply_theme(self):
@@ -116,34 +136,39 @@ class BiliApp:
         if hasattr(self, 'current_frame') and hasattr(self.current_frame, 'on_theme_changed'):
             self.current_frame.on_theme_changed()
 
-    # ---------- Cookie 管理 ----------
+    # ---------- Cookie 管理（使用 COOKIES_FILE） ----------
     def save_cookies(self):
-        cookies_json = json.dumps(self.session.cookies.get_dict(), ensure_ascii=False)
-        keyring.set_password("BiliDownloader", "cookies", cookies_json)
+        """将 session cookies 保存到 COOKIES_FILE"""
+        cookies_dict = self.session.cookies.get_dict()
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cookies_dict, f, ensure_ascii=False, indent=2)
 
     def load_cookies(self):
+        """从 COOKIES_FILE 加载 cookies"""
+        if not os.path.exists(COOKIES_FILE):
+            return False
         try:
-            cookies_json = keyring.get_password("BiliDownloader", "cookies")
-            if cookies_json:
-                cookies = json.loads(cookies_json)
-                self.session.cookies.update(cookies)
-                return True
-        except:
-            pass
-        return False
+            with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
+                cookies_dict = json.load(f)
+            self.session.cookies.update(cookies_dict)
+            return True
+        except Exception:
+            return False
 
     def clear_cookies(self):
-        try:
-            keyring.delete_password("BiliDownloader", "cookies")
-        except:
-            pass
+        """清除 cookies 文件并清空 session"""
+        if os.path.exists(COOKIES_FILE):
+            try:
+                os.remove(COOKIES_FILE)
+            except OSError:
+                pass
         self.session.cookies.clear()
 
     def try_auto_login(self):
         if not self.load_cookies():
             return False
         try:
-            nav_resp = self.session.get('https://api.bilibili.com/x/web-interface/nav')
+            nav_resp = self.session.get('https://api.bilibili.com/x/web-interface/nav', timeout=10)
             nav_data = nav_resp.json()
             if nav_data['code'] == 0 and nav_data['data'].get('isLogin'):
                 self.uid = nav_data['data']['mid']
@@ -178,7 +203,9 @@ class BiliApp:
                 self.root.after(0, lambda: self.download_status_var.set(f"下载完成: {title}"))
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("下载失败", f"{title}: {str(e)}"))
+
         threading.Thread(target=download_thread, daemon=True).start()
+
 
 if __name__ == '__main__':
     root = tk.Tk()

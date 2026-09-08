@@ -2,33 +2,49 @@
 import queue
 import datetime
 import threading
+import os
 from enum import Enum
+from config import APP_DIR  # 统一使用 config 中的目录
 
 class TaskStatus(Enum):
     PENDING = "待下载"
     DOWNLOADING = "下载中"
     FINISHED = "已完成"
     FAILED = "下载失败"
+    CANCELLED = "已取消"
 
 # 全局队列
 ui_queue = queue.Queue()
 
+# 日志文件路径
+LOG_FILE = os.path.join(APP_DIR, "bili_downloader.log")
+
+# 文件写入锁（线程安全）
+_log_lock = threading.Lock()
+
+def _write_log_file(msg):
+    """将日志消息追加写入日志文件"""
+    try:
+        with _log_lock:
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(msg + "\n")
+    except Exception as e:
+        print(f"写入日志文件失败: {e}")
+
 def send_log(msg, log_type="INFO"):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{log_type}] {msg}"
-    print(log_entry) # 保留控制台输出
+    print(log_entry)  # 保留控制台输出
     ui_queue.put(("LOG", log_entry))
+    _write_log_file(log_entry)  # 写入文件
 
 def send_status_update(song_id, status: TaskStatus, title="", progress=0.0, message=""):
     ui_queue.put(("STATUS", song_id, status.value, title, progress, message))
 
 def send_duplicate_query(file_path, title, artist):
     """发送重复文件询问，并阻塞当前线程等待结果"""
-    # 创建一个结果容器和事件
     result_box = [None]
     event = threading.Event()
-    # 将请求放入队列，主线程会弹窗，并设置事件
     ui_queue.put(("QUERY_DUP", file_path, title, artist, result_box, event))
-    # 阻塞当前下载线程，等待主线程弹窗并点击按钮
     event.wait()
-    return result_box[0] # True(覆盖), False(跳过), None(取消/全局跳过)
+    return result_box[0]  # True(覆盖), False(跳过), None(取消/全局跳过)

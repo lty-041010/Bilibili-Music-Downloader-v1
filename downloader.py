@@ -135,8 +135,9 @@ class Downloader:
                 self._update_task(bvid, status=TaskStatus.FINISHED, progress=100.0, filepath=file_path)
 
         except Exception as e:
+            # 区分取消异常与其他错误
             if str(e) == "下载已取消":
-                self._update_task(bvid, status=TaskStatus.FAILED, message="用户取消下载")
+                self._update_task(bvid, status=TaskStatus.CANCELLED, message="用户取消下载")
                 send_log(f"下载已取消: {bvid}", "WARNING")
             else:
                 self._update_task(bvid, status=TaskStatus.FAILED, message=str(e))
@@ -177,8 +178,10 @@ class Downloader:
         new_name = f"{base_name}.mp3"
         new_path = os.path.join(base_dir, new_name)
 
-        # 检查重复
-        if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(file_path):
+        # 检查重复（使用规范化路径比较，避免大小写/符号链接等问题）
+        norm_new_path = os.path.normcase(os.path.realpath(new_path))
+        norm_file_path = os.path.normcase(os.path.realpath(file_path))
+        if os.path.exists(new_path) and norm_new_path != norm_file_path:
             send_log(f"发现重复文件: {safe_title} - {safe_artist}", "WARNING")
 
             if self.skip_all_duplicates:
@@ -194,7 +197,7 @@ class Downloader:
             if user_choice is True:
                 send_log(f"用户选择覆盖，正在重新下载: {safe_title}")
                 try:
-                    if os.path.abspath(new_path) != os.path.abspath(file_path):
+                    if norm_new_path != norm_file_path:
                         os.remove(new_path)
                 except Exception as e:
                     send_log(f"删除旧文件失败: {e}", "ERROR")
@@ -239,6 +242,10 @@ class Downloader:
     # ---------- 进度回调 ----------
     def _hook(self, d):
         if self.cancel_flag:
+            if self.progress_callback:
+                self.progress_callback("下载已取消")
+            if self.current_bvid:
+                self._update_task(self.current_bvid, status=TaskStatus.CANCELLED, message="用户取消下载")
             raise Exception("下载已取消")
 
         if d['status'] == 'downloading':

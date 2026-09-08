@@ -1,3 +1,4 @@
+# config.py
 import os
 
 # 获取系统标准存放配置的路径
@@ -9,6 +10,9 @@ os.makedirs(APP_DIR, exist_ok=True)
 
 COOKIES_FILE = os.path.join(APP_DIR, "bili_cookies.json")
 CONFIG_FILE = os.path.join(APP_DIR, "bili_config.json")
+
+# 默认音乐下载目录（可被用户配置覆盖）
+DEFAULT_DOWNLOAD_DIR = r"E:\音乐"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
