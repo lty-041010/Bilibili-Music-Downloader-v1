@@ -41,10 +41,18 @@ def send_log(msg, log_type="INFO"):
 def send_status_update(song_id, status: TaskStatus, title="", progress=0.0, message=""):
     ui_queue.put(("STATUS", song_id, status.value, title, progress, message))
 
+
 def send_duplicate_query(file_path, title, artist):
-    """发送重复文件询问，并阻塞当前线程等待结果"""
+    """发送重复文件询问，并阻塞当前线程等待结果（增加30秒超时）"""
     result_box = [None]
     event = threading.Event()
     ui_queue.put(("QUERY_DUP", file_path, title, artist, result_box, event))
-    event.wait()
+
+    # 等待最多 30 秒，如果用户没点，默认返回 False（跳过当前文件）
+    event.wait(timeout=30)
+
+    # 如果超时了且没有结果（result_box[0] 还是 None），默认改为 False
+    if result_box[0] is None:
+        result_box[0] = False  # 自动跳过当前文件，继续下一个任务
+
     return result_box[0]  # True(覆盖), False(跳过), None(取消/全局跳过)

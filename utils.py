@@ -48,11 +48,16 @@ def clean_noise_text(text: str) -> str:
 
 
 def parse_filename(fname: str):
+    # 移除临时前缀和扩展名
     name_no_ext = fname.replace("temp_", "").rsplit(".mp3", 1)[0]
     clean_str = clean_noise_text(name_no_ext)
+
+    # 1. 【最准的方案】：如果有《》，直接取《》里的内容作为纯歌名，忽略前后所有垃圾信息！
     book_ret = re.search(r"《(.*?)》", clean_str)
     if book_ret:
         return book_ret.group(1).strip(), ""
+
+    # 2. 使用 - 分割，但严格限制只分割一次 (maxsplit=1) 防止越界
     parts = re.split(r"[-‑—]", clean_str, maxsplit=1)
     if len(parts) == 2:
         a, b = parts[0].strip(), parts[1].strip()
@@ -60,13 +65,17 @@ def parse_filename(fname: str):
             return b, ""
         if not b:
             return a, ""
-        if len(a) >= len(b):
-            return a, b
-        else:
-            return b, a
+
+        # === 核心修改：不再依赖长度判断，强制第一部分为歌名，第二部分为歌手 ===
+        return a, b
+
+    # 3. 如果分割后依然超过 2 个部分（可能类似【Hi-Res无损】的连字符没被清洗掉）
     parts = re.split(r"[-‑—]", clean_str)
     if len(parts) > 2:
+        # 只取最后一段作为歌名，前面的全部忽略
         return parts[-1].strip(), ""
+
+    # 4. 纯歌名
     return clean_str, ""
 
 
